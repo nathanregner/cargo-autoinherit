@@ -18,6 +18,9 @@ pub struct AutoInheritConf {
     /// Package name(s) of workspace member(s) to exclude.
     #[arg(short, long)]
     exclude_members: Vec<String>,
+    /// Only inherit dependencies used in multiple workspace members.
+    #[arg(short, long)]
+    pub shared_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -121,9 +124,13 @@ macro_rules! get_either_table_mut {
 }
 
 pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
-    let metadata = guppy::MetadataCommand::new().exec().context(
-        "Failed to execute `cargo metadata`. Was the command invoked inside a Rust project?",
-    )?;
+    let metadata = guppy::MetadataCommand::new()
+        .other_options(["--frozen".to_string()])
+        .exec()
+        .context(
+            "Failed to execute `cargo metadata`. \
+            Was the command invoked inside a Rust project with a Cargo.lock file?",
+        )?;
     let graph = metadata
         .build_graph()
         .context("Failed to build package graph")?;
@@ -204,6 +211,9 @@ pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
             }
             continue 'outer;
         }
+        if conf.shared_only && specs.occurrence_count() < 2 {
+            continue;
+        }
 
         let spec = specs.into_iter().next().unwrap();
         package_name2inherited_source.insert(package_name, spec);
@@ -269,6 +279,7 @@ pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
                 deps,
                 deps_toml,
                 &package_name2inherited_source,
+                &existing_workspace_deps,
                 &mut was_modified,
                 conf.prefer_simple_dotted,
             );
@@ -281,6 +292,7 @@ pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
                 deps,
                 deps_toml,
                 &package_name2inherited_source,
+                &existing_workspace_deps,
                 &mut was_modified,
                 conf.prefer_simple_dotted,
             );
@@ -293,6 +305,7 @@ pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
                 deps,
                 deps_toml,
                 &package_name2inherited_source,
+                &existing_workspace_deps,
                 &mut was_modified,
                 conf.prefer_simple_dotted,
             );
@@ -324,12 +337,15 @@ fn inherit_deps(
     deps: &DepsSet,
     toml_deps: &mut toml_edit::Table,
     package_name2spec: &BTreeMap<String, SharedDependency>,
+    existing_workspace_deps: &BTreeSet<String>,
     was_modified: &mut bool,
     prefer_simple_dotted: bool,
 ) {
     for (name, dep) in deps {
         let package_name = dep.package().unwrap_or(name.as_str());
-        if !package_name2spec.contains_key(package_name) {
+        if !package_name2spec.contains_key(package_name)
+            && !existing_workspace_deps.contains(package_name)
+        {
             continue;
         }
         match dep {

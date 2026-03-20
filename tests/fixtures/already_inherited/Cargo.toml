@@ -1,0 +1,6 @@
+[workspace]
+members = ["pkg_a", "pkg_b"]
+
+[workspace.dependencies]
+serde = "1.0"
+tokio = "1.0"

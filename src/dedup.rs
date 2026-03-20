@@ -15,10 +15,13 @@ use std::collections::HashMap;
 #[derive(Default)]
 pub(crate) struct MinimalVersionSet {
     seen: HashMap<DependencySource, bool>,
+    count: usize,
 }
 
 impl MinimalVersionSet {
     pub(crate) fn insert(&mut self, dep: SharedDependency) {
+        self.count += 1;
+
         if let Some(default_features) = self.seen.get_mut(&dep.source) {
             *default_features &= dep.default_features;
             return;
@@ -61,6 +64,12 @@ impl MinimalVersionSet {
 
     pub(crate) fn len(&self) -> usize {
         self.seen.len()
+    }
+
+    /// Returns the total number of times dependencies were inserted into this set.
+    /// This counts each occurrence across workspace members, not unique sources.
+    pub(crate) fn occurrence_count(&self) -> usize {
+        self.count
     }
 }
 
@@ -152,4 +161,42 @@ fn as_simple_caret(req: &VersionReq) -> Option<&Comparator> {
         return None;
     }
     Some(comp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn version_dep(version: &str) -> SharedDependency {
+        SharedDependency {
+            default_features: true,
+            source: DependencySource::Version(VersionReq::parse(version).unwrap()),
+        }
+    }
+
+    #[test]
+    fn single_use_has_count_one() {
+        let mut set = MinimalVersionSet::default();
+        set.insert(version_dep("1.0"));
+        assert_eq!(set.occurrence_count(), 1);
+    }
+
+    #[test]
+    fn multi_use_has_count_greater_than_one() {
+        let mut set = MinimalVersionSet::default();
+        set.insert(version_dep("1.0"));
+        set.insert(version_dep("1.0"));
+        set.insert(version_dep("1.0"));
+        assert_eq!(set.occurrence_count(), 3);
+        assert_eq!(set.len(), 1); // Still only one unique source
+    }
+
+    #[test]
+    fn multi_use_with_mergeable_versions() {
+        let mut set = MinimalVersionSet::default();
+        set.insert(version_dep("^1.0"));
+        set.insert(version_dep("^1.2"));
+        assert_eq!(set.occurrence_count(), 2);
+        assert_eq!(set.len(), 1); // Merged into one
+    }
 }
