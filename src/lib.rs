@@ -21,6 +21,9 @@ pub struct AutoInheritConf {
     /// Only inherit dependencies used in multiple workspace members.
     #[arg(short, long)]
     pub shared_only: bool,
+    /// Remove workspace dependencies that are not used by any member.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub prune: bool,
 }
 
 #[derive(Debug, Default)]
@@ -156,9 +159,16 @@ pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
     );
 
     let mut package_name2specs: BTreeMap<String, Action> = BTreeMap::new();
+    let mut used_workspace_deps: BTreeSet<String> = BTreeSet::new();
+    let existing_workspace_deps: BTreeSet<String> = workspace
+        .dependencies
+        .as_ref()
+        .map(|deps| deps.keys().cloned().collect())
+        .unwrap_or_default();
     if let Some(deps) = &mut workspace.dependencies {
         rewrite_dep_paths_as_absolute(deps.values_mut(), workspace_root);
-        process_deps(deps, &mut package_name2specs);
+        // Don't track inherited here - these are definitions, not uses
+        process_deps(deps, &mut package_name2specs, &mut BTreeSet::new());
     }
 
     for member_id in graph.workspace().member_ids() {
@@ -179,21 +189,21 @@ pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
                 deps.values_mut(),
                 package.manifest_path().parent().unwrap(),
             );
-            process_deps(deps, &mut package_name2specs);
+            process_deps(deps, &mut package_name2specs, &mut used_workspace_deps);
         }
         if let Some(deps) = &mut manifest.dev_dependencies {
             rewrite_dep_paths_as_absolute(
                 deps.values_mut(),
                 package.manifest_path().parent().unwrap(),
             );
-            process_deps(deps, &mut package_name2specs);
+            process_deps(deps, &mut package_name2specs, &mut used_workspace_deps);
         }
         if let Some(deps) = &mut manifest.build_dependencies {
             rewrite_dep_paths_as_absolute(
                 deps.values_mut(),
                 package.manifest_path().parent().unwrap(),
             );
-            process_deps(deps, &mut package_name2specs);
+            process_deps(deps, &mut package_name2specs, &mut used_workspace_deps);
         }
     }
 
@@ -204,6 +214,10 @@ pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
                 that we currently don't support (e.g. private registry, path dependency).");
             continue;
         };
+        // Skip deps already in workspace.dependencies - they don't need to be added
+        if existing_workspace_deps.contains(&package_name) {
+            continue;
+        }
         if specs.len() > 1 {
             eprintln!("`{package_name}` won't be auto-inherited because there are multiple sources for it:");
             for spec in specs.into_iter() {
@@ -248,6 +262,23 @@ pub fn auto_inherit(conf: AutoInheritConf) -> Result<(), anyhow::Error> {
             was_modified = true;
         }
     }
+
+    // Prune unused workspace dependencies
+    if conf.prune {
+        let deps_to_remove: Vec<String> = workspace_deps
+            .iter()
+            .map(|(name, _)| name.to_string())
+            .filter(|name| {
+                !used_workspace_deps.contains(name)
+                    && !package_name2inherited_source.contains_key(name)
+            })
+            .collect();
+        for name in deps_to_remove {
+            workspace_deps.remove(&name);
+            was_modified = true;
+        }
+    }
+
     if was_modified {
         fs_err::write(
             workspace_root.join("Cargo.toml").as_std_path(),
@@ -420,7 +451,11 @@ fn insert_preserving_decor(table: &mut toml_edit::Table, key: &str, mut value: t
     table.insert_formatted(&new_key, value);
 }
 
-fn process_deps(deps: &DepsSet, package_name2specs: &mut BTreeMap<String, Action>) {
+fn process_deps(
+    deps: &DepsSet,
+    package_name2specs: &mut BTreeMap<String, Action>,
+    used_workspace_deps: &mut BTreeSet<String>,
+) {
     for (name, details) in deps {
         match dep2shared_dep(details) {
             SourceType::Shareable(source) => {
@@ -429,7 +464,9 @@ fn process_deps(deps: &DepsSet, package_name2specs: &mut BTreeMap<String, Action
                     set.insert(source);
                 }
             }
-            SourceType::Inherited => {}
+            SourceType::Inherited => {
+                used_workspace_deps.insert(name.clone());
+            }
             SourceType::MustBeSkipped => {
                 package_name2specs.insert(name.clone(), Action::Skip);
             }

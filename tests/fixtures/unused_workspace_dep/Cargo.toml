@@ -1,0 +1,6 @@
+[workspace]
+members = ["pkg_a"]
+
+[workspace.dependencies]
+serde = "1.0"
+unused_dep = "0.1"

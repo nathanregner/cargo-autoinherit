@@ -147,3 +147,39 @@ fn shared_only_counts_workspace_inherited_deps() {
         "serde in pkg_b should be inherited"
     );
 }
+
+#[test]
+fn prune_removes_unused_workspace_deps() {
+    let dir = copy_fixture("unused_workspace_dep");
+
+    autoinherit_cmd(&dir).assert().success();
+
+    let root = read_manifest(&dir.path().join("Cargo.toml"));
+    let workspace_deps = root.workspace.unwrap().dependencies.unwrap();
+    assert!(
+        workspace_deps.contains_key("serde"),
+        "serde should remain in workspace.dependencies (it's used)"
+    );
+    assert!(
+        !workspace_deps.contains_key("unused_dep"),
+        "unused_dep should be removed from workspace.dependencies"
+    );
+}
+
+#[test]
+fn prune_false_keeps_unused_workspace_deps() {
+    let dir = copy_fixture("unused_workspace_dep");
+
+    autoinherit_cmd(&dir).arg("--prune=false").assert().success();
+
+    let root = read_manifest(&dir.path().join("Cargo.toml"));
+    let workspace_deps = root.workspace.unwrap().dependencies.unwrap();
+    assert!(
+        workspace_deps.contains_key("serde"),
+        "serde should remain in workspace.dependencies"
+    );
+    assert!(
+        workspace_deps.contains_key("unused_dep"),
+        "unused_dep should remain with --prune=false"
+    );
+}
